@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>설곽 졸업사진 열람 도구</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #f6f8fb; color: #1f2937; }
+    header { background: #0f172a; color: white; padding: 16px 20px; }
+    main { max-width: 1100px; margin: 20px auto; padding: 0 16px; }
+    .card { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-bottom: 16px; }
+    .groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+    .group { border: 1px solid #dbe2ea; border-radius: 10px; padding: 12px; cursor: pointer; }
+    .thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+    .thumbs img { width: 100%; border-radius: 8px; border: 1px solid #dce2ea; }
+    button { border: 0; background: #2563eb; color: #fff; padding: 10px 12px; border-radius: 8px; cursor: pointer; }
+    input, select { padding: 9px; border-radius: 8px; border: 1px solid #cfd8e3; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .muted { color: #6b7280; font-size: 14px; }
+  </style>
+</head>
+<body>
+<header>
+  <h2>설곽 졸업사진 개인별 열람 프로그램 (MVP)</h2>
+</header>
+<main>
+  <section class="card">
+    <h3>1) 사진 업로드</h3>
+    <div class="row">
+      <input id="files" type="file" multiple accept="image/*" />
+      <button id="uploadBtn">업로드 + 얼굴 그룹화 실행</button>
+      <button id="resetBtn" style="background:#dc2626">데이터 초기화</button>
+    </div>
+    <p class="muted" id="uploadStatus">아직 업로드된 사진이 없습니다.</p>
+  </section>
+
+  <section class="card">
+    <h3>2) 얼굴 그룹 목록 (학생 후보 그룹)</h3>
+    <div class="groups" id="groups"></div>
+  </section>
+
+  <section class="card">
+    <h3>3) 선택한 그룹의 사진 열람</h3>
+    <p class="muted" id="selected">그룹을 선택하세요.</p>
+    <div class="thumbs" id="photos"></div>
+  </section>
+
+  <section class="card">
+    <h3>4) 관리자 보정</h3>
+    <div class="row">
+      <input id="sourceGroup" placeholder="source group id" />
+      <input id="targetGroup" placeholder="target group id" />
+      <button id="mergeBtn">그룹 병합</button>
+    </div>
+    <p class="muted">오분류가 보이면 source를 target으로 병합하세요.</p>
+  </section>
+</main>
+<script>
+async function api(path, options = {}) {
+  const res = await fetch(path, options);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function loadGroups() {
+  const data = await api('/api/groups');
+  const wrap = document.getElementById('groups');
+  wrap.innerHTML = '';
+  if (!data.groups.length) {
+    wrap.innerHTML = '<p class="muted">업로드 후 자동 그룹이 생성됩니다.</p>';
+    return;
+  }
+  data.groups.forEach(g => {
+    const div = document.createElement('div');
+    div.className = 'group';
+    div.innerHTML = `<strong>Group ${g.id.slice(0, 8)}</strong><br><span class="muted">사진 ${g.photo_count}장 / 얼굴 ${g.face_count}개</span>`;
+    div.onclick = () => loadGroupPhotos(g.id);
+    wrap.appendChild(div);
+  });
+}
+
+async function loadGroupPhotos(groupId) {
+  const data = await api(`/api/groups/${groupId}/photos`);
+  document.getElementById('selected').textContent = `선택 그룹: ${groupId}`;
+  const box = document.getElementById('photos');
+  box.innerHTML = '';
+  data.photos.forEach(p => {
+    const img = document.createElement('img');
+    img.src = p.stored_path;
+    img.alt = p.filename;
+    box.appendChild(img);
+  });
+}
+
+document.getElementById('uploadBtn').onclick = async () => {
+  const files = document.getElementById('files').files;
+  if (!files.length) return;
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  document.getElementById('uploadStatus').textContent = '업로드/분류 중...';
+  const result = await api('/api/upload', { method: 'POST', body: fd });
+  document.getElementById('uploadStatus').textContent = `${result.uploaded.length}개 업로드 완료`;
+  await loadGroups();
+};
+
+document.getElementById('mergeBtn').onclick = async () => {
+  const source = document.getElementById('sourceGroup').value.trim();
+  const target = document.getElementById('targetGroup').value.trim();
+  if (!source || !target) return;
+  const params = new URLSearchParams({ source_group_id: source, target_group_id: target });
+  await api(`/api/admin/merge-groups?${params.toString()}`, { method: 'POST' });
+  await loadGroups();
+};
+
+document.getElementById('resetBtn').onclick = async () => {
+  await api('/api/reset', { method: 'POST' });
+  document.getElementById('uploadStatus').textContent = '초기화 완료';
+  document.getElementById('photos').innerHTML = '';
+  document.getElementById('selected').textContent = '그룹을 선택하세요.';
+  await loadGroups();
+};
+
+loadGroups();
+</script>
+</body>
+</html>
