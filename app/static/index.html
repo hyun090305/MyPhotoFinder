@@ -27,11 +27,17 @@
   <section class="card">
     <h3>1) 사진 업로드</h3>
     <div class="row">
+      <input id="apiBase" placeholder="API 서버 주소 (예: http://127.0.0.1:8000)" style="min-width:320px" />
+      <button id="saveApiBtn" style="background:#4b5563">API 주소 저장</button>
+    </div>
+    <p class="muted">정적 호스팅(예: GitHub Pages)에서 열었다면 API 서버 주소를 먼저 입력하세요.</p>
+    <div class="row">
       <input id="files" type="file" multiple accept="image/*" />
       <button id="uploadBtn">업로드 + 얼굴 그룹화 실행</button>
       <button id="resetBtn" style="background:#dc2626">데이터 초기화</button>
     </div>
     <p class="muted" id="uploadStatus">아직 업로드된 사진이 없습니다.</p>
+    <p class="muted" id="errorStatus" style="color:#b91c1c"></p>
   </section>
 
   <section class="card">
@@ -56,13 +62,42 @@
   </section>
 </main>
 <script>
+const DEFAULT_API_BASE = `${window.location.protocol}//${window.location.host}`;
+const API_STORAGE_KEY = 'photoFinderApiBase';
+
+function getApiBase() {
+  const configured = localStorage.getItem(API_STORAGE_KEY);
+  return (configured || DEFAULT_API_BASE).replace(/\/$/, '');
+}
+
+function setError(message = '') {
+  document.getElementById('errorStatus').textContent = message;
+}
+
+function buildApiErrorMessage(url, status, text) {
+  if (status === 404 && text.includes('GitHub Pages')) {
+    return `API 경로를 찾지 못했습니다: ${url}. GitHub Pages에서는 백엔드 API가 없으므로 API 서버 주소를 먼저 저장하세요.`;
+  }
+  if (status === 405) {
+    return `요청 메서드가 허용되지 않습니다 (${status}). API 서버 주소가 올바른지 확인하세요: ${url}`;
+  }
+  return `API 요청 실패 (${status}): ${url}`;
+}
+
 async function api(path, options = {}) {
-  const res = await fetch(path, options);
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  const url = `${getApiBase()}${path}`;
+  const res = await fetch(url, options);
+  const text = await res.text();
+  if (!res.ok) throw new Error(buildApiErrorMessage(url, res.status, text));
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`JSON 응답 파싱 실패: ${url}`);
+  }
 }
 
 async function loadGroups() {
+  setError('');
   const data = await api('/api/groups');
   const wrap = document.getElementById('groups');
   wrap.innerHTML = '';
@@ -80,16 +115,21 @@ async function loadGroups() {
 }
 
 async function loadGroupPhotos(groupId) {
-  const data = await api(`/api/groups/${groupId}/photos`);
-  document.getElementById('selected').textContent = `선택 그룹: ${groupId}`;
-  const box = document.getElementById('photos');
-  box.innerHTML = '';
-  data.photos.forEach(p => {
-    const img = document.createElement('img');
-    img.src = p.stored_path;
-    img.alt = p.filename;
-    box.appendChild(img);
-  });
+  setError('');
+  try {
+    const data = await api(`/api/groups/${groupId}/photos`);
+    document.getElementById('selected').textContent = `선택 그룹: ${groupId}`;
+    const box = document.getElementById('photos');
+    box.innerHTML = '';
+    data.photos.forEach(p => {
+      const img = document.createElement('img');
+      img.src = p.stored_path;
+      img.alt = p.filename;
+      box.appendChild(img);
+    });
+  } catch (err) {
+    setError(err.message);
+  }
 }
 
 document.getElementById('uploadBtn').onclick = async () => {
@@ -98,9 +138,15 @@ document.getElementById('uploadBtn').onclick = async () => {
   const fd = new FormData();
   for (const f of files) fd.append('files', f);
   document.getElementById('uploadStatus').textContent = '업로드/분류 중...';
-  const result = await api('/api/upload', { method: 'POST', body: fd });
-  document.getElementById('uploadStatus').textContent = `${result.uploaded.length}개 업로드 완료`;
-  await loadGroups();
+  setError('');
+  try {
+    const result = await api('/api/upload', { method: 'POST', body: fd });
+    document.getElementById('uploadStatus').textContent = `${result.uploaded.length}개 업로드 완료`;
+    await loadGroups();
+  } catch (err) {
+    setError(err.message);
+    document.getElementById('uploadStatus').textContent = '업로드 실패';
+  }
 };
 
 document.getElementById('mergeBtn').onclick = async () => {
@@ -108,19 +154,52 @@ document.getElementById('mergeBtn').onclick = async () => {
   const target = document.getElementById('targetGroup').value.trim();
   if (!source || !target) return;
   const params = new URLSearchParams({ source_group_id: source, target_group_id: target });
-  await api(`/api/admin/merge-groups?${params.toString()}`, { method: 'POST' });
-  await loadGroups();
+  setError('');
+  try {
+    await api(`/api/admin/merge-groups?${params.toString()}`, { method: 'POST' });
+    await loadGroups();
+  } catch (err) {
+    setError(err.message);
+  }
 };
 
 document.getElementById('resetBtn').onclick = async () => {
-  await api('/api/reset', { method: 'POST' });
-  document.getElementById('uploadStatus').textContent = '초기화 완료';
-  document.getElementById('photos').innerHTML = '';
-  document.getElementById('selected').textContent = '그룹을 선택하세요.';
+  setError('');
+  try {
+    await api('/api/reset', { method: 'POST' });
+    document.getElementById('uploadStatus').textContent = '초기화 완료';
+    document.getElementById('photos').innerHTML = '';
+    document.getElementById('selected').textContent = '그룹을 선택하세요.';
+    await loadGroups();
+  } catch (err) {
+    setError(err.message);
+  }
+};
+
+document.getElementById('saveApiBtn').onclick = async () => {
+  const value = document.getElementById('apiBase').value.trim();
+  if (!value) {
+    localStorage.removeItem(API_STORAGE_KEY);
+  } else {
+    localStorage.setItem(API_STORAGE_KEY, value.replace(/\/$/, ''));
+  }
+  setError('');
   await loadGroups();
 };
 
-loadGroups();
+async function init() {
+  document.getElementById('apiBase').value = getApiBase();
+  if (window.location.host.includes('github.io') && !localStorage.getItem(API_STORAGE_KEY)) {
+    setError('GitHub Pages에서는 API가 동작하지 않습니다. 먼저 API 서버 주소를 입력하고 저장하세요.');
+  }
+  try {
+    await loadGroups();
+  } catch (err) {
+    setError(err.message);
+  }
+}
+
+init();
 </script>
 </body>
 </html>
